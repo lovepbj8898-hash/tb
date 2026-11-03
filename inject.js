@@ -3,18 +3,28 @@
   var W = window;
   var D = document;
 
-  D.body.innerHTML = "<div style='text-align:center;margin-top:50px;font-family:sans-serif;'><h2 style='color:#0f766e;'>tb任务 (自动版)</h2><p id='status' style='color:#666;'>正在自动执行...</p></div>";
+  // 1. 渲染界面
+  D.body.innerHTML = "<div style='text-align:center;margin-top:50px;font-family:sans-serif;'><h2 style='color:#0f766e;'>tb任务 (全自动版)</h2><p id='status' style='color:#666;'>正在向电脑请求任务...</p></div>";
   var statusEl = D.getElementById('status');
 
-  // 1. 获取深链传过来的参数
-  var urlParams = new URLSearchParams(location.search);
-  var targetId = urlParams.get('id') || "";
-  var targetTitle = urlParams.get('kw') || "";
-
-  if (!targetId) {
-    statusEl.innerText = "未获取到商品ID";
-    return;
-  }
+  // 2. 从电脑 127.0.0.1 获取任务
+  fetch('http://127.0.0.1:8080/get_task')
+    .then(res => res.json())
+    .then(task => {
+        if (!task || !task.id) {
+            statusEl.innerText = "未获取到任务数据";
+            return;
+        }
+        var targetId = task.id;
+        var targetTitle = task.title;
+        statusEl.innerText = "正在搜索：" + targetTitle;
+        
+        // 3. 开始淘宝 MTOP 请求
+        runTask(targetId, targetTitle);
+    })
+    .catch(err => {
+        statusEl.innerText = "连接电脑失败，请检查数据线";
+    });
 
   function mtopSend(api, param, version) {
     return new Promise(function (resolve, reject) {
@@ -32,7 +42,6 @@
       tb2025: 'true', ShopSDKModuleType: 'local', grayHair: 'false', elderHome: 'false', searchElderHomeOpen: 'false',
       homePageVersion: 'v7', enablePicShot: 'true', isBeta: 'false', gpsEnabled: 'false', history_query_from: 'suggest_all-queryBE2', extra_data_key: 's.m.taobao.com/h5entry', mainChannel: '' };
   }
-  function getSearch(query) { return mtopSend('mtop.relationrecommend.MtopRecommend.recommend', buildSearchParam(query), '1.0'); }
 
   function buildDetailParam(itemId) {
     var ex = { NAV_PROCESSOR_START_TIME: "1761720138804", appReqFrom: "detail", bizName: "minidetail", container_type: "sku",
@@ -46,37 +55,35 @@
       ttd_ttid: "10001201@tt_detail_android_12.51.40", ultron2: "true", utdid: "b5eAIejvgwsCAbRmgzU4VyYm", videoAutoPlay: "true" };
     return { detail_v: "3.3.2", exParams: JSON.stringify(ex), id: itemId };
   }
-  function getDetail(itemId) { return mtopSend('mtop.taobao.detail.data.get', buildDetailParam(itemId), '1.0'); }
-  
-  function buildCouponParam(itemId) {
-    var ex = { wh_weex: "true", "": "", subItemId: itemId, itemId: itemId, popId: "1755758950744", sellerId: "", marketcoupon: "true", from: "cart", sellerType: "B", weex_mode: "dom", addressId: "23516134638", token: "-1632109989", renderMode: "texture", promotionFloatingData: "undefined" };
-    return { exParam: JSON.stringify(ex), itemId: itemId };
-  }
-  function getCoupon(itemId) { return mtopSend('mtop.taobao.detail.taodetail.getcoupon', buildCouponParam(itemId), '1.0'); }
 
-  statusEl.innerText = "正在搜索标题：" + targetTitle;
-  getSearch(targetTitle).then(function(r) {
-      statusEl.innerText = "搜索成功，正在提取数据...";
-      fetchDetail(targetId);
-  }).catch(function(e) {
-      statusEl.innerText = "搜索失败，尝试直接提取...";
-      fetchDetail(targetId);
-  });
-
-  function fetchDetail(itemId) {
-      var detailResp = null, couponResp = null;
-      var done = 0;
-      function finish() {
-          done++;
-          if (done < 2) return;
-          var payload = { itemId: itemId, alldetail: detailResp, coupon: couponResp };
-          var json = JSON.stringify(payload);
-          
-          console.log("TASK_DATA_START::" + json + "::TASK_DATA_END");
-          statusEl.innerText = "数据抓取成功！已发送回电脑。";
-          statusEl.style.color = "green";
-      }
-      getDetail(itemId).then(function (r) { detailResp = r; finish(); }).catch(function (e) { detailResp = { error: e }; finish(); });
-      getCoupon(itemId).then(function (r) { couponResp = r; finish(); }).catch(function (e) { couponResp = { error: e }; finish(); });
+  function runTask(targetId, targetTitle) {
+    // 搜索（为了留下正常的搜索轨迹，防封）
+    mtopSend('mtop.relationrecommend.MtopRecommend.recommend', buildSearchParam(targetTitle)).then(function(r) {
+        statusEl.innerText = "搜索成功，正在拉取详情...";
+        // 拉取详情
+        mtopSend('mtop.taobao.detail.data.get', buildDetailParam(targetId)).then(function(res) {
+            statusEl.innerText = "抓取成功，正在回传电脑...";
+            
+            // 将数据 POST 回电脑
+            fetch('http://127.0.0.1:8080/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId: targetId, alldetail: res })
+            }).then(() => {
+                statusEl.innerText = "全部完成！请关闭此页。";
+                statusEl.style.color = "green";
+            }).catch(e => {
+                statusEl.innerText = "回传电脑失败：" + e;
+            });
+            
+        }).catch(function (e) {
+            statusEl.innerText = "详情抓取失败: " + JSON.stringify(e);
+            statusEl.style.color = "red";
+        });
+    }).catch(function(e) {
+        statusEl.innerText = "搜索接口异常，直接尝试拉取详情...";
+        // 如果搜索失败，兜底直接拉详情
+        runTask(targetId, "");
+    });
   }
 })();
