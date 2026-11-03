@@ -3,28 +3,25 @@
   var W = window;
   var D = document;
 
-  // 1. 渲染界面
-  D.body.innerHTML = "<div style='text-align:center;margin-top:50px;font-family:sans-serif;'><h2 style='color:#0f766e;'>tb任务 (全自动版)</h2><p id='status' style='color:#666;'>正在向电脑请求任务...</p></div>";
+  D.body.innerHTML = "<div style='text-align:center;margin-top:50px;font-family:sans-serif;'><h2 style='color:#0f766e;'>tb任务</h2><p id='status' style='color:#666;'>正在读取剪贴板...</p></div>";
   var statusEl = D.getElementById('status');
 
-  // 2. 从电脑 127.0.0.1 获取任务
-  fetch('http://127.0.0.1:8080/get_task')
-    .then(res => res.json())
-    .then(task => {
-        if (!task || !task.id) {
-            statusEl.innerText = "未获取到任务数据";
-            return;
-        }
-        var targetId = task.id;
-        var targetTitle = task.title;
-        statusEl.innerText = "正在搜索：" + targetTitle;
-        
-        // 3. 开始淘宝 MTOP 请求
-        runTask(targetId, targetTitle);
-    })
-    .catch(err => {
-        statusEl.innerText = "连接电脑失败，请检查数据线";
-    });
+  // 1. 从剪贴板读取任务 (格式: ID|标题)
+  navigator.clipboard.readText().then(function(text) {
+      if (!text || !text.includes('|')) {
+          statusEl.innerText = "剪贴板里没有任务信息！";
+          return;
+      }
+      var parts = text.split('|');
+      var targetId = parts[0];
+      var targetTitle = parts[1];
+      
+      statusEl.innerText = "正在搜索：" + targetTitle;
+      runTask(targetId, targetTitle);
+
+  }).catch(function(err) {
+      statusEl.innerText = "读取剪贴板失败，请确保淘宝有剪贴板权限！";
+  });
 
   function mtopSend(api, param, version) {
     return new Promise(function (resolve, reject) {
@@ -57,33 +54,23 @@
   }
 
   function runTask(targetId, targetTitle) {
-    // 搜索（为了留下正常的搜索轨迹，防封）
     mtopSend('mtop.relationrecommend.MtopRecommend.recommend', buildSearchParam(targetTitle)).then(function(r) {
         statusEl.innerText = "搜索成功，正在拉取详情...";
-        // 拉取详情
+        
         mtopSend('mtop.taobao.detail.data.get', buildDetailParam(targetId)).then(function(res) {
             statusEl.innerText = "抓取成功，正在回传电脑...";
             
-            // 将数据 POST 回电脑
-            fetch('http://127.0.0.1:8080/upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ itemId: targetId, alldetail: res })
-            }).then(() => {
-                statusEl.innerText = "全部完成！请关闭此页。";
-                statusEl.style.color = "green";
-            }).catch(e => {
-                statusEl.innerText = "回传电脑失败：" + e;
-            });
+            // 直接把数据打印到日志，电脑通过数据线截获
+            var payload = { itemId: targetId, alldetail: res };
+            console.log("TASK_DATA_START::" + JSON.stringify(payload) + "::TASK_DATA_END");
             
+            statusEl.innerText = "全部完成！请关闭此页。";
+            statusEl.style.color = "green";
         }).catch(function (e) {
             statusEl.innerText = "详情抓取失败: " + JSON.stringify(e);
-            statusEl.style.color = "red";
         });
     }).catch(function(e) {
-        statusEl.innerText = "搜索接口异常，直接尝试拉取详情...";
-        // 如果搜索失败，兜底直接拉详情
-        runTask(targetId, "");
+        statusEl.innerText = "搜索失败，请重试...";
     });
   }
 })();
